@@ -820,20 +820,38 @@ class AutoencoderKLMiniMaxH3(nn.Module):
             # The eager tile driver owns NVTX so each marker remains outside
             # the compiled decoder graph.
             with nvtx_range("minimax_h3.vae.decode_clip.decode_tiles"):
-                for row_index, (y_position, y_length) in enumerate(zip(y_indices, y_lengths)):
-                    row = []
-                    for column_index, (x_position, x_length) in enumerate(zip(x_indices, x_lengths)):
-                        with nvtx_range(f"minimax_h3.vae.decode_clip.tile.{row_index}.{column_index}"):
-                            tile = z[
-                                ...,
-                                y_position // ratio:y_position // ratio + y_length // ratio,
-                                x_position // ratio:x_position // ratio + x_length // ratio,
-                            ]
-                            projected_tile = self._project_decoder_tile(tile)
-                            with nvtx_range("minimax_h3.vae.decode_clip.tile.decoder_forward"):
-                                decoded_tile = self.decoder(projected_tile)
-                            row.append(decoded_tile)
-                    rows.append(row)
+                if z.shape[0] == 1 and len(set(y_lengths)) == 1 and len(set(x_lengths)) == 1:
+                    # Every tile has the same geometry, so decode the whole
+                    # grid as one batched forward: the per-tile forward runs
+                    # 36 layers over ~1.8k tokens, far too small to fill the
+                    # GPU, and the tiles are independent by construction.
+                    tiles = torch.cat([
+                        z[..., y_position // ratio:y_position // ratio + y_length // ratio,
+                          x_position // ratio:x_position // ratio + x_length // ratio]
+                        for y_position, y_length in zip(y_indices, y_lengths)
+                        for x_position, x_length in zip(x_indices, x_lengths)
+                    ])
+                    projected = self._project_decoder_tile(tiles)
+                    with nvtx_range("minimax_h3.vae.decode_clip.tile.decoder_forward_batched"):
+                        decoded = self.decoder(projected)
+                    num_columns = len(x_indices)
+                    rows = [[decoded[index:index + 1] for index in range(row_index * num_columns, (row_index + 1) * num_columns)]
+                            for row_index in range(len(y_indices))]
+                else:
+                    for row_index, (y_position, y_length) in enumerate(zip(y_indices, y_lengths)):
+                        row = []
+                        for column_index, (x_position, x_length) in enumerate(zip(x_indices, x_lengths)):
+                            with nvtx_range(f"minimax_h3.vae.decode_clip.tile.{row_index}.{column_index}"):
+                                tile = z[
+                                    ...,
+                                    y_position // ratio:y_position // ratio + y_length // ratio,
+                                    x_position // ratio:x_position // ratio + x_length // ratio,
+                                ]
+                                projected_tile = self._project_decoder_tile(tile)
+                                with nvtx_range("minimax_h3.vae.decode_clip.tile.decoder_forward"):
+                                    decoded_tile = self.decoder(projected_tile)
+                                row.append(decoded_tile)
+                        rows.append(row)
 
             with nvtx_range("minimax_h3.vae.decode_clip.stitch_tiles"):
                 stitched = self._stitch_tiles(rows, y_overlaps, x_overlaps)
