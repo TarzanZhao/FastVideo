@@ -72,17 +72,6 @@ class Worker:
         # Set the CUDA device BEFORE any CUDA calls
         if current_platform.is_cuda_alike():
             torch.cuda.set_device(self.device)
-            # Expandable segments let the caching allocator grow and shrink
-            # one virtual segment instead of cudaFree/cudaMalloc-ing whole
-            # segments when the mix of live sizes changes between the DiT
-            # forwards and the VAE decode. The H3 decode profile showed
-            # 28 cudaFree + 17 cudaMalloc (370 ms) per request on rank 0.
-            if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
-                try:
-                    torch.cuda.memory._set_allocator_settings("expandable_segments:True")
-                    logger.info("Worker %d CUDA allocator: expandable_segments", self.rank)
-                except Exception as exc:  # pragma: no cover - old torch or already allocated
-                    logger.warning("Could not enable expandable segments: %s", exc)
 
         # Every worker inherits torch's default intra-op thread count, which
         # is the whole node's core count, so N workers run N x cores OpenMP
