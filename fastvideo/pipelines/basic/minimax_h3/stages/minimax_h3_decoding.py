@@ -248,6 +248,7 @@ class MiniMaxH3AudioDecodingStage(PipelineStage):
         if model_parallel_is_initialized() and not get_world_group().is_first_rank:
             batch.extra["audio"] = torch.empty((0, 2), device="cpu", dtype=torch.float32)
             batch.extra["audio_sample_rate"] = self.audio_vae.sampling_rate
+            perf_probe.flush()  # every rank writes its checkpoint snapshot at the end of the request
             self._clear_runtime(batch)
             return batch
 
